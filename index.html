@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#121519">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Turbinen-Sound</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;700&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<style>
+/* Layout: eine Spalte wie ein Cockpit – Tacho und Schub-Balken oben, Bedienung darunter, große Flächen zum Antippen */
+:root{
+  --bg:#121519; --panel:#1a1e24; --line:#2b313a; --fg:#e8eaed; --muted:#8a929d;
+  --heat:#f2a347; --brake:#e5544b; --ok:#5cbf8b;
+  --f-display:"Saira Condensed","Arial Narrow",sans-serif;
+  --f-body:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg)}
+body{font:16px/1.45 var(--f-body);-webkit-tap-highlight-color:transparent;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.cockpit{max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:18px;
+  padding-block:16px 32px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.brand{font:700 20px/1 var(--f-display);letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:10px}
+.brand small{font:500 12px/1 var(--f-body);letter-spacing:.08em;color:var(--muted)}
+.mark{width:14px;height:14px;border-radius:50%;background:radial-gradient(circle,var(--heat) 0 35%,transparent 36%),var(--line);box-shadow:0 0 0 2px var(--line)}
+.seg{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px}
+.seg button{all:unset;cursor:pointer;padding:7px 14px;border-radius:999px;font:700 13px/1 var(--f-body);color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--line);color:var(--fg)}
+.seg button:focus-visible{outline:2px solid var(--heat);outline-offset:2px}
+
+.gauge{display:flex;flex-direction:column;gap:10px}
+.speed{display:flex;align-items:baseline;gap:10px;font-family:var(--f-display);font-variant-numeric:tabular-nums}
+#spd{font-weight:700;font-size:clamp(96px,30vw,168px);line-height:.85;letter-spacing:-.02em}
+.speed em{font-style:normal;font-weight:500;font-size:22px;color:var(--muted);letter-spacing:.06em}
+.gline{display:flex;justify-content:space-between;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+#gval{color:var(--fg);font:700 15px/1 var(--f-display);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+.gbar{position:relative;height:14px;background:var(--panel);border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.gfill{position:absolute;top:0;bottom:0;left:50%;width:0;background:var(--heat)}
+.gfill.neg{background:var(--brake)}
+.gbar .mid{position:absolute;left:50%;top:-2px;bottom:-2px;width:2px;margin-left:-1px;background:var(--fg);opacity:.5}
+#trace{width:100%;height:84px;display:block;background:var(--panel);border:1px solid var(--line);border-radius:10px}
+
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:flex;align-items:center;gap:7px;padding:6px 11px;border:1px solid var(--line);border-radius:999px;font-size:13px;color:var(--muted)}
+.chip b{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.chip[data-state="ok"]{color:var(--fg)} .chip[data-state="ok"] b{background:var(--ok)}
+.chip[data-state="wait"] b{background:var(--heat)}
+.msg{margin:0;padding:12px 14px;border-left:3px solid var(--heat);background:var(--panel);border-radius:0 8px 8px 0;font-size:15px}
+
+.start{all:unset;cursor:pointer;text-align:center;padding:20px;border-radius:14px;
+  font:700 24px/1 var(--f-display);letter-spacing:.12em;text-transform:uppercase;
+  background:var(--heat);color:#1a1209}
+.start.on{background:transparent;color:var(--fg);box-shadow:inset 0 0 0 2px var(--line)}
+.start:focus-visible,.hold:focus-visible,.tools button:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
+
+.pad{display:grid;grid-template-columns:1fr 1.4fr;gap:12px}
+.hold{all:unset;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;
+  height:150px;border-radius:16px;display:grid;place-items:center;
+  font:700 26px/1 var(--f-display);letter-spacing:.14em;text-transform:uppercase;
+  background:var(--panel);border:2px solid var(--line);transition:background .08s,border-color .08s}
+.hold.brake{color:var(--brake)} .hold.gas{color:var(--heat)}
+.hold.brake.down{background:var(--brake);border-color:var(--brake);color:var(--bg)}
+.hold.gas.down{background:var(--heat);border-color:var(--heat);color:var(--bg)}
+
+.tools{display:flex;gap:10px;flex-wrap:wrap}
+.tools button{all:unset;cursor:pointer;padding:10px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px;color:var(--fg)}
+
+.sliders{display:grid;gap:8px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
+.sliders label{display:flex;justify-content:space-between;font-size:14px;color:var(--muted)}
+.sliders output{color:var(--fg);font-variant-numeric:tabular-nums}
+.sliders input{width:100%;accent-color:var(--heat);margin:0 0 6px}
+
+.help{font-size:15px;color:var(--muted)}
+.help summary{cursor:pointer;color:var(--fg);font-weight:700}
+.help ol{padding-left:20px;margin:10px 0;display:grid;gap:6px}
+.help p{margin:0}
+@media (prefers-reduced-motion:reduce){.hold{transition:none}}
+</style>
+</head>
+<body>
+<main class="cockpit">
+  <header class="top">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>Turbinen-Sound <small>Prototyp</small></div>
+    <div class="seg" role="group" aria-label="Modus">
+      <button id="mSensor" aria-pressed="true">Fahrt</button>
+      <button id="mSim" aria-pressed="false">Simulation</button>
+    </div>
+  </header>
+
+  <section class="gauge" aria-label="Anzeige">
+    <div class="speed"><span id="spd">0</span><em>km/h</em></div>
+    <div class="gline"><span>Bremse</span><span id="gval">0,00 g</span><span>Schub</span></div>
+    <div class="gbar"><div class="gfill" id="gfill"></div><i class="mid"></i></div>
+    <canvas id="trace" aria-label="Längsbeschleunigung der letzten 15 Sekunden"></canvas>
+  </section>
+
+  <section class="chips" aria-live="polite">
+    <div class="chip" id="cMotion" data-state="off"><b></b><span>Bewegungssensor</span></div>
+    <div class="chip" id="cGps" data-state="off"><b></b><span>GPS</span></div>
+    <div class="chip" id="cDir" data-state="off"><b></b><span>Fahrtrichtung</span></div>
+  </section>
+
+  <p id="msg" class="msg" hidden></p>
+
+  <button id="startBtn" class="start">Motor starten</button>
+
+  <div id="simPad" class="pad" hidden>
+    <button id="brakeBtn" class="hold brake">Bremse</button>
+    <button id="gasBtn" class="hold gas">Gas</button>
+  </div>
+
+  <div id="sensorTools" class="tools">
+    <button id="recal">Neu kalibrieren</button>
+    <button id="resetDir">Fahrtrichtung vergessen</button>
+  </div>
+
+  <section class="sliders">
+    <label for="vol">Lautstärke <output id="volOut">80 %</output></label>
+    <input type="range" id="vol" min="0" max="100" value="80">
+    <label for="sens">Volle Leistung ab <output id="sensOut">3,0 m/s²</output></label>
+    <input type="range" id="sens" min="10" max="60" value="30">
+  </section>
+
+  <details class="help">
+    <summary>So nutzt du den Prototyp</summary>
+    <ol>
+      <li>Seite am Handy über HTTPS öffnen, z. B. über GitHub Pages. Über eine lokale Datei liefert der Browser keine Sensordaten.</li>
+      <li>Handy fest in die Halterung, Bluetooth mit dem Auto verbinden.</li>
+      <li>Im Stand auf „Motor starten“ tippen. Die App kalibriert knapp 2 Sekunden lang.</li>
+      <li>Losfahren. Beim ersten Anfahren lernt die App, wo vorne ist, danach verfeinert GPS die Richtung. Bleibt die Halterung gleich, merkt sich die App das.</li>
+      <li>Bildschirm anlassen. Im Hintergrund pausiert der Browser die Sensoren.</li>
+    </ol>
+    <p>Während der Fahrt nicht bedienen. Am Schreibtisch testest du den Sound im Modus „Simulation“ (am PC auch mit Pfeil hoch/runter).</p>
+  </details>
+</main>
+
+<script>
+"use strict";
+/* ---------- Vektor-Helfer ---------- */
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const norm=a=>Math.hypot(a[0],a[1],a[2]);
+const scale=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]];
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const unit=a=>{const n=norm(a);return n>1e-6?scale(a,1/n):[0,0,0];};
+const angle=(a,b)=>Math.acos(clamp(dot(unit(a),unit(b)),-1,1))*180/Math.PI;
+const horiz=(v,g)=>{const gu=unit(g);return sub(v,scale(gu,dot(v,gu)));};
+const lp=(dt,tau)=>1-Math.exp(-dt/tau);
+const wait=ms=>new Promise(r=>setTimeout(r,ms));
+const de=(x,d)=>x.toFixed(d).replace('.',',');
+const store={
+  get(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}},
+  del(k){try{localStorage.removeItem(k);}catch(e){}}
+};
+
+/* ---------- Zustand ---------- */
+const S={
+  mode:'sensor', running:false, listening:false,
+  g:[0,0,9.81], calib:null,
+  fwd:null, fwdConf:0, hs:[0,0,0], depart:0,
+  aLong:0, v:0, thr:0, brk:0, thrHist:[],
+  win:{sum:[0,0,0],n:0}, lastFix:null,
+  lastM:0, lastGpsT:0, gpsAcc:null,
+  sens:3, vol:0.8,
+  sim:{gas:false,brake:false},
+  trace:new Float32Array(300), traceI:0
+};
+
+/* ---------- Sound-Engine (Web Audio, komplett synthetisch) ---------- */
+class Turbine{
+  constructor(){
+    const ctx=this.ctx=new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
+    const comp=ctx.createDynamicsCompressor();
+    comp.threshold.value=-16; comp.knee.value=12; comp.ratio.value=4; comp.attack.value=0.01; comp.release.value=0.2;
+    this.master=ctx.createGain(); this.master.gain.value=0;
+    this.master.connect(comp); comp.connect(ctx.destination);
+
+    const len=ctx.sampleRate*2, buf=ctx.createBuffer(1,len,ctx.sampleRate), d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    const noise=()=>{const s=ctx.createBufferSource();s.buffer=buf;s.loop=true;s.start(0,Math.random()*1.5);return s;};
+    const gain=v=>{const g=ctx.createGain();g.gain.value=v;return g;};
+    const filt=(type,f,q)=>{const b=ctx.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q;return b;};
+    const osc=(type,f)=>{const o=ctx.createOscillator();o.type=type;o.frequency.value=f;o.start();return o;};
+
+    // Turbinen-Heulen: zwei Sägezähne durch einen Bandpass
+    this.w1=osc('sawtooth',300); this.w2=osc('sawtooth',150);
+    this.wBP=filt('bandpass',900,2.5); this.wG=gain(0);
+    this.w1.connect(this.wBP); this.w2.connect(this.wBP); this.wBP.connect(this.wG).connect(this.master);
+    // hohes Pfeifen
+    this.ws=osc('sine',900); this.wsG=gain(0); this.ws.connect(this.wsG).connect(this.master);
+    // Schub-Fauchen: Rauschen durch Tiefpass, öffnet mit dem Gas
+    this.rLP=filt('lowpass',400,0.9); this.rG=gain(0); noise().connect(this.rLP).connect(this.rG).connect(this.master);
+    // Grollen: tiefes Rauschen und Sub-Ton
+    this.ruLP=filt('lowpass',130,1.2); this.ruG=gain(0); noise().connect(this.ruLP).connect(this.ruG).connect(this.master);
+    this.sub=osc('triangle',40); this.subG=gain(0); this.sub.connect(this.subG).connect(this.master);
+    // Bremsen: Zischen
+    this.hHP=filt('highpass',2600,0.7); this.hG=gain(0); noise().connect(this.hHP).connect(this.hG).connect(this.master);
+    // Boost-Stoß bei starkem Beschleunigen
+    this.bBP=filt('bandpass',800,1.4); this.bG=gain(0); noise().connect(this.bBP).connect(this.bG).connect(this.master);
+
+    this.rpm=0; this.lastBoost=-9;
+  }
+  update(dt,kmh,thr,brk){
+    // Drehzahl mit Trägheit: schnell hoch, langsam runter
+    const target=clamp(0.22+0.4*Math.min(1,kmh/140)+0.38*thr-0.12*brk,0.15,1);
+    this.rpm+=(target-this.rpm)*lp(dt,target>this.rpm?0.35:0.9);
+    const r=this.rpm, t=this.ctx.currentTime, set=(p,v)=>p.setTargetAtTime(v,t,0.05);
+    const f=180+r*820;
+    set(this.w1.frequency,f); set(this.w2.frequency,f*0.502); set(this.wBP.frequency,f*1.6);
+    set(this.wG.gain,0.06+0.14*r);
+    set(this.ws.frequency,f*3.02); set(this.wsG.gain,0.006+0.04*r*r);
+    set(this.rLP.frequency,280+2400*thr+700*r); set(this.rG.gain,0.04+0.55*thr+0.06*r);
+    set(this.ruG.gain,0.35+0.35*thr); set(this.sub.frequency,34+34*r); set(this.subG.gain,0.12+0.18*thr);
+    set(this.hG.gain,0.22*brk*Math.min(1,kmh/15));
+  }
+  boost(){
+    const t=this.ctx.currentTime; if(t-this.lastBoost<2.5) return; this.lastBoost=t;
+    const g=this.bG.gain, f=this.bBP.frequency;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value,t); g.linearRampToValueAtTime(0.75,t+0.06); g.setTargetAtTime(0,t+0.25,0.3);
+    f.cancelScheduledValues(t); f.setValueAtTime(500,t); f.exponentialRampToValueAtTime(3200,t+0.45); f.exponentialRampToValueAtTime(1200,t+1.2);
+  }
+  setVolume(v,on){this.master.gain.setTargetAtTime(on?v:0,this.ctx.currentTime,on?0.15:0.4);}
+}
+let engine=null;
+
+/* ---------- Fahrtrichtung ---------- */
+function setFwd(v,conf){
+  S.fwd=unit(horiz(v,S.g)); S.fwdConf=conf;
+  store.set('turbine.mount',{g:S.g,fwd:S.fwd,conf:S.fwdConf});
+}
+
+/* ---------- Bewegungssensor ---------- */
+function onMotion(e){
+  const ig=e.accelerationIncludingGravity; if(!ig||ig.x==null) return;
+  const now=performance.now(), dt=clamp((now-(S.lastM||now))/1000,0,0.1); S.lastM=now;
+  const raw=[ig.x,ig.y,ig.z];
+  if(S.calib){S.calib.sum=add(S.calib.sum,raw);S.calib.n++;return;}
+  if(!S.running||S.mode!=='sensor') return;
+
+  const stopped=S.v<0.4;
+  S.g=add(S.g,scale(sub(raw,S.g),lp(dt,stopped?1.5:30)));       // Schwerkraft langsam nachführen
+  const la=e.acceleration;
+  const lin=(la&&la.x!=null)?[la.x,la.y,la.z]:sub(raw,S.g);      // lineare Beschleunigung
+  const h=horiz(lin,S.g);                                         // nur waagerechter Anteil
+  S.win.sum=add(S.win.sum,h); S.win.n++;
+  S.hs=add(S.hs,scale(sub(h,S.hs),lp(dt,0.25)));
+
+  // Anfahren aus dem Stand: Richtung der ersten deutlichen Beschleunigung = vorne
+  if(S.fwdConf<1&&stopped){
+    if(norm(S.hs)>0.9){S.depart+=dt; if(S.depart>0.35){setFwd(S.hs,1);S.depart=0;}}
+    else S.depart=0;
+  }
+  const a=S.fwd?dot(h,S.fwd):0;
+  S.aLong+=(a-S.aLong)*lp(dt,0.12);
+  if(S.fwd) S.v=Math.max(0,S.v+S.aLong*dt);
+}
+
+/* ---------- GPS ---------- */
+function onGps(p){
+  const c=p.coords; S.gpsAcc=c.accuracy; S.lastGpsT=performance.now();
+  if(c.speed==null||isNaN(c.speed)) return;
+  const sp=c.speed, ts=p.timestamp;
+  if(S.lastFix&&S.running){
+    const dtg=(ts-S.lastFix.ts)/1000;
+    if(dtg>0.3&&dtg<3&&S.win.n>5){
+      const ag=(sp-S.lastFix.sp)/dtg, mh=scale(S.win.sum,1/S.win.n), mn=norm(mh), aa=Math.abs(ag);
+      if(aa>0.6&&mn>0.4){
+        const cand=unit(scale(mh,Math.sign(ag)));
+        const w=Math.min(1,aa/2.5)*Math.min(mn,aa)/Math.max(mn,aa);
+        if(!S.fwd) setFwd(cand,w);
+        else setFwd(add(scale(S.fwd,S.fwdConf),scale(cand,w)),Math.min(25,S.fwdConf+w));
+      }
+    }
+  }
+  S.lastFix={ts,sp}; S.win={sum:[0,0,0],n:0};
+  if(S.mode==='sensor') S.v+=(sp-S.v)*(S.fwd?0.5:1);
+}
+function onGpsErr(err){ if(err.code===1) showMsg('GPS wurde nicht erlaubt. Ohne GPS driftet die Geschwindigkeit, der Sound reagiert aber trotzdem aufs Beschleunigen.'); }
+
+/* ---------- Kalibrierung ---------- */
+async function calibrate(){
+  S.calib={sum:[0,0,0],n:0};
+  showMsg('Kalibriere … Auto bitte stillhalten.');
+  await wait(1800);
+  const c=S.calib; S.calib=null;
+  if(c.n<10) throw new Error('nosensor');
+  S.g=scale(c.sum,1/c.n); S.aLong=0; S.hs=[0,0,0]; S.win={sum:[0,0,0],n:0};
+  const saved=store.get('turbine.mount');
+  if(saved&&saved.fwd&&angle(saved.g,S.g)<8){S.fwd=unit(horiz(saved.fwd,S.g));S.fwdConf=Math.min(saved.conf||1,3);}
+  else{S.fwd=null;S.fwdConf=0;}
+  showMsg(null);
+}
+
+/* ---------- Start / Stopp ---------- */
+let wl=null;
+async function wakeLock(){try{if(navigator.wakeLock) wl=await navigator.wakeLock.request('screen');}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&S.running) wakeLock();});
+
+async function start(){
+  if(!engine) engine=new Turbine();
+  const pResume=engine.ctx.resume();
+  let pPerm=null;
+  if(S.mode==='sensor'&&typeof DeviceMotionEvent!=='undefined'&&typeof DeviceMotionEvent.requestPermission==='function')
+    pPerm=DeviceMotionEvent.requestPermission().catch(()=>'denied');
+  await pResume;
+  wakeLock();
+  if(S.mode==='sensor'){
+    if(pPerm&&(await pPerm)!=='granted'){showMsg('Der Bewegungssensor wurde nicht freigegeben.');return;}
+    if(!S.listening){
+      window.addEventListener('devicemotion',onMotion);
+      if(navigator.geolocation) navigator.geolocation.watchPosition(onGps,onGpsErr,{enableHighAccuracy:true,maximumAge:0,timeout:10000});
+      S.listening=true;
+    }
+    try{await calibrate();}
+    catch(e){showMsg(window.isSecureContext
+      ?'Kein Bewegungssensor gefunden. Am PC gibt es keinen – nutze dort die Simulation.'
+      :'Keine Sensordaten: Die Seite muss über HTTPS laufen. Für den Sound-Test die Simulation nutzen.');return;}
+  }
+  S.running=true; engine.rpm=0; engine.setVolume(S.vol,true); render();
+}
+function stop(){S.running=false; if(engine) engine.setVolume(0,false); render();}
+
+/* ---------- Simulation ---------- */
+function simStep(dt){
+  let a;
+  if(S.sim.gas) a=4.2*(1-S.v/60)-0.2;
+  else if(S.sim.brake) a=S.v>0.05?-7.5:0;
+  else a=S.v>0.05?-(0.35+0.0006*S.v*S.v):0;
+  S.aLong+=(a-S.aLong)*lp(dt,0.15);
+  S.v=Math.max(0,S.v+S.aLong*dt);
+  if(S.v===0&&S.aLong<0) S.aLong*=0.8;
+}
+
+/* ---------- Hauptschleife (läuft auch, wenn rAF pausiert) ---------- */
+let lastTick=performance.now(), traceAcc=0;
+setInterval(()=>{
+  const now=performance.now(), dt=Math.min(0.1,(now-lastTick)/1000); lastTick=now;
+  if(S.mode==='sim'&&S.running) simStep(dt);
+  const a=S.aLong;
+  S.thr=clamp((a-0.15)/S.sens,0,1);
+  S.brk=clamp((-a-0.3)/(S.sens*1.6),0,1);
+  S.thrHist.push(S.thr); if(S.thrHist.length>10) S.thrHist.shift();
+  if(engine&&S.running){
+    if(S.thr>0.6&&S.thr-S.thrHist[0]>0.4) engine.boost();
+    engine.update(dt,S.v*3.6,S.thr,S.brk);
+  }
+  traceAcc+=dt;
+  while(traceAcc>=0.05){traceAcc-=0.05; S.trace[S.traceI]=S.running?a:0; S.traceI=(S.traceI+1)%S.trace.length;}
+},30);
+
+/* ---------- Anzeige ---------- */
+const $=id=>document.getElementById(id);
+const cv=$('trace'), cx=cv.getContext('2d');
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COL={heat:css('--heat'),brake:css('--brake'),line:css('--line')};
+
+function chip(el,state,text){el.dataset.state=state; el.lastElementChild.textContent=text;}
+function showMsg(t){const m=$('msg'); m.hidden=!t; if(t) m.textContent=t;}
+
+function render(){
+  const b=$('startBtn');
+  b.textContent=S.running?'Motor aus':'Motor starten'; b.classList.toggle('on',S.running);
+  $('mSensor').setAttribute('aria-pressed',S.mode==='sensor');
+  $('mSim').setAttribute('aria-pressed',S.mode==='sim');
+  $('simPad').hidden=S.mode!=='sim';
+  $('sensorTools').hidden=S.mode!=='sensor';
+}
+
+function draw(){
+  const now=performance.now();
+  $('spd').textContent=Math.round(S.v*3.6);
+  const gv=S.aLong/9.81;
+  $('gval').textContent=(gv>=0?'+':'−')+de(Math.abs(gv),2)+' g';
+  const pct=clamp(Math.abs(S.aLong)/6,0,1)*50, f=$('gfill');
+  f.classList.toggle('neg',S.aLong<0);
+  f.style.width=pct+'%'; f.style.left=(S.aLong<0?50-pct:50)+'%';
+
+  if(S.mode==='sim'){
+    chip($('cMotion'),'off','Bewegungssensor aus'); chip($('cGps'),'off','GPS aus'); chip($('cDir'),'ok','Simulation aktiv');
+  }else{
+    const mOk=now-S.lastM<1000, gOk=now-S.lastGpsT<3500;
+    chip($('cMotion'),mOk?'ok':(S.listening?'wait':'off'),mOk?'Bewegungssensor':'Sensor wartet');
+    chip($('cGps'),gOk?'ok':(S.listening?'wait':'off'),gOk?'GPS ±'+Math.round(S.gpsAcc)+' m':'GPS sucht');
+    chip($('cDir'),S.fwdConf>=1?'ok':(S.listening?'wait':'off'),
+      S.fwdConf>=1?'Fahrtrichtung gelernt':(S.fwd?'Fahrtrichtung unsicher':'Richtung: beim Anfahren'));
+  }
+
+  // Verlauf zeichnen
+  const dpr=window.devicePixelRatio||1, w=cv.clientWidth, h=cv.clientHeight;
+  if(cv.width!==Math.round(w*dpr)){cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr);}
+  cx.setTransform(dpr,0,0,dpr,0,0); cx.clearRect(0,0,w,h);
+  const mid=h/2, n=S.trace.length, sx=w/(n-1), sy=(h/2-4)/6;
+  cx.strokeStyle=COL.line; cx.lineWidth=1; cx.beginPath(); cx.moveTo(0,mid); cx.lineTo(w,mid); cx.stroke();
+  for(const [sign,col] of [[1,COL.heat],[-1,COL.brake]]){
+    cx.fillStyle=col; cx.beginPath(); cx.moveTo(0,mid);
+    for(let i=0;i<n;i++){
+      const v=S.trace[(S.traceI+i)%n], c=sign>0?Math.max(0,v):Math.min(0,v);
+      cx.lineTo(i*sx,mid-clamp(c,-6,6)*sy);
+    }
+    cx.lineTo(w,mid); cx.closePath(); cx.fill();
+  }
+  requestAnimationFrame(draw);
+}
+
+/* ---------- Bedienung ---------- */
+$('startBtn').addEventListener('click',()=>{S.running?stop():start();});
+function setMode(m){
+  if(S.mode===m) return;
+  stop(); S.mode=m; S.v=0; S.aLong=0; showMsg(null); render();
+}
+$('mSensor').addEventListener('click',()=>setMode('sensor'));
+$('mSim').addEventListener('click',()=>setMode('sim'));
+$('recal').addEventListener('click',async()=>{
+  if(!S.running){showMsg('Erst den Motor starten, dann kalibrieren.');return;}
+  S.running=false; try{await calibrate();}catch(e){} S.running=true;
+});
+$('resetDir').addEventListener('click',()=>{S.fwd=null;S.fwdConf=0;store.del('turbine.mount');showMsg('Fahrtrichtung vergessen. Sie wird beim nächsten Anfahren neu gelernt.');});
+
+function hold(el,key){
+  const on=e=>{e.preventDefault(); S.sim[key]=true; el.classList.add('down'); try{el.setPointerCapture(e.pointerId);}catch(_){}};
+  const off=()=>{S.sim[key]=false; el.classList.remove('down');};
+  el.addEventListener('pointerdown',on);
+  ['pointerup','pointercancel','lostpointercapture'].forEach(t=>el.addEventListener(t,off));
+  el.addEventListener('contextmenu',e=>e.preventDefault());
+}
+hold($('gasBtn'),'gas'); hold($('brakeBtn'),'brake');
+const keyMap={ArrowUp:'gas',ArrowDown:'brake'};
+addEventListener('keydown',e=>{if(S.mode==='sim'&&keyMap[e.key]){e.preventDefault();S.sim[keyMap[e.key]]=true;$(keyMap[e.key]+'Btn').classList.add('down');}});
+addEventListener('keyup',e=>{if(keyMap[e.key]){S.sim[keyMap[e.key]]=false;$(keyMap[e.key]+'Btn').classList.remove('down');}});
+
+$('vol').addEventListener('input',e=>{S.vol=e.target.value/100;$('volOut').textContent=e.target.value+' %';if(engine&&S.running) engine.setVolume(S.vol,true);});
+$('sens').addEventListener('input',e=>{S.sens=e.target.value/10;$('sensOut').textContent=de(S.sens,1)+' m/s²';});
+
+render(); requestAnimationFrame(draw);
+</script>
+</body>
+</html>
