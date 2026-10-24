@@ -74,6 +74,15 @@ body{font:16px/1.45 var(--f-body);-webkit-tap-highlight-color:transparent;
 .tools{display:flex;gap:10px;flex-wrap:wrap}
 .tools button{all:unset;cursor:pointer;padding:10px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px;color:var(--fg)}
 
+.sounds{margin:0;padding:0;border:0;min-width:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.sounds legend{padding:0;margin-bottom:8px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.snd{position:relative;cursor:pointer;display:block;padding:12px 14px;background:var(--panel);border:2px solid var(--line);border-radius:12px}
+.snd input{position:absolute;opacity:0;pointer-events:none}
+.snd b{display:block;font:700 19px/1.1 var(--f-display);letter-spacing:.06em;text-transform:uppercase}
+.snd small{display:block;margin-top:4px;font-size:13px;color:var(--muted)}
+.snd:has(input:checked){border-color:var(--heat)} .snd:has(input:checked) b{color:var(--heat)}
+.snd:has(input:focus-visible){outline:2px solid var(--fg);outline-offset:3px}
+
 .sliders{display:grid;gap:8px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:12px}
 .sliders label{display:flex;justify-content:space-between;font-size:14px;color:var(--muted)}
 .sliders output{color:var(--fg);font-variant-numeric:tabular-nums}
@@ -122,6 +131,10 @@ body{font:16px/1.45 var(--f-body);-webkit-tap-highlight-color:transparent;
     <button id="recal">Neu kalibrieren</button>
     <button id="resetDir">Fahrtrichtung vergessen</button>
   </div>
+
+  <fieldset class="sounds" id="sounds">
+    <legend>Sound</legend>
+  </fieldset>
 
   <section class="sliders">
     <label for="vol">Lautstärke <output id="volOut">80 %</output></label>
@@ -172,45 +185,81 @@ const S={
   aLong:0, v:0, thr:0, brk:0, thrHist:[],
   win:{sum:[0,0,0],n:0}, lastFix:null,
   lastM:0, lastGpsT:0, gpsAcc:null,
-  sens:3, vol:0.8,
+  sens:3, vol:0.8, sound:store.get('turbine.sound'),
   sim:{gas:false,brake:false},
   trace:new Float32Array(300), traceI:0
 };
 
-/* ---------- Sound-Engine (Web Audio, komplett synthetisch) ---------- */
-class Turbine{
+/* ---------- Audio-Grundgerüst: ein AudioContext für alle Sounds, Master mit Kompressor und Limiter ---------- */
+let audio=null;
+function initAudio(){
+  if(audio) return audio;
+  const ctx=new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
+  const comp=ctx.createDynamicsCompressor();
+  comp.threshold.value=-16; comp.knee.value=12; comp.ratio.value=4; comp.attack.value=0.01; comp.release.value=0.2;
+  const master=ctx.createGain(); master.gain.value=0;
+  // Begrenzer: bis 0,7 unverändert, darüber weich unter 1,0 gehalten
+  const lim=ctx.createWaveShaper(), lc=new Float32Array(2049);
+  for(let i=0;i<lc.length;i++){const x=i/1024-1, a=Math.abs(x); lc[i]=a<0.7?x:Math.sign(x)*(0.7+0.29*Math.tanh((a-0.7)/0.29));}
+  lim.curve=lc; lim.oversample='2x';
+  master.connect(comp); comp.connect(lim); lim.connect(ctx.destination);
+  const len=ctx.sampleRate*2, noiseBuf=ctx.createBuffer(1,len,ctx.sampleRate), d=noiseBuf.getChannelData(0);
+  for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+  return audio={ctx,master,noiseBuf};
+}
+function setVolume(on){if(audio) audio.master.gain.setTargetAtTime(on?S.vol:0,audio.ctx.currentTime,on?0.15:0.4);}
+
+/* ---------- Basis für alle Sounds: eigener Ausgang, Bausteine, sauberes Abbauen ----------
+   Ein Sound erbt hiervon, baut im Konstruktor seinen Graphen auf this.out
+   und implementiert update(dt,kmh,thr,brk); reset() und boost() sind optional. */
+class Sound{
   constructor(){
-    const ctx=this.ctx=new (window.AudioContext||window.webkitAudioContext)({latencyHint:'interactive'});
-    const comp=ctx.createDynamicsCompressor();
-    comp.threshold.value=-16; comp.knee.value=12; comp.ratio.value=4; comp.attack.value=0.01; comp.release.value=0.2;
-    this.master=ctx.createGain(); this.master.gain.value=0;
-    this.master.connect(comp); comp.connect(ctx.destination);
+    const ctx=this.ctx=audio.ctx; this.srcs=[];
+    this.out=ctx.createGain(); this.out.gain.value=0; this.out.connect(audio.master);
+    this.out.gain.setTargetAtTime(1,ctx.currentTime,0.08);                  // weich einblenden
+  }
+  noise(){const s=this.ctx.createBufferSource();s.buffer=audio.noiseBuf;s.loop=true;s.start(0,Math.random()*1.5);this.srcs.push(s);return s;}
+  osc(type,f){const o=this.ctx.createOscillator();o.type=type;o.frequency.value=f;o.start();this.srcs.push(o);return o;}
+  gain(v){const g=this.ctx.createGain();g.gain.value=v;return g;}
+  filt(type,f,q){const b=this.ctx.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q;return b;}
+  shaper(k){                                                               // weiche Sättigung (tanh)
+    const w=this.ctx.createWaveShaper(), n=1024, c=new Float32Array(n);
+    for(let i=0;i<n;i++){const x=i/(n-1)*2-1; c[i]=Math.tanh(k*x)/Math.tanh(k);}
+    w.curve=c; w.oversample='2x'; return w;
+  }
+  reset(){}
+  boost(){}
+  dispose(){                                                               // ausblenden, dann Quellen stoppen
+    const g=this.out.gain, t=this.ctx.currentTime;
+    g.cancelScheduledValues(t); g.setTargetAtTime(0,t,0.08);
+    setTimeout(()=>{this.srcs.forEach(s=>{try{s.stop();}catch(e){}}); this.out.disconnect();},600);
+  }
+}
 
-    const len=ctx.sampleRate*2, buf=ctx.createBuffer(1,len,ctx.sampleRate), d=buf.getChannelData(0);
-    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
-    const noise=()=>{const s=ctx.createBufferSource();s.buffer=buf;s.loop=true;s.start(0,Math.random()*1.5);return s;};
-    const gain=v=>{const g=ctx.createGain();g.gain.value=v;return g;};
-    const filt=(type,f,q)=>{const b=ctx.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q;return b;};
-    const osc=(type,f)=>{const o=ctx.createOscillator();o.type=type;o.frequency.value=f;o.start();return o;};
-
+/* ---------- Sound: Turbine ---------- */
+class Turbine extends Sound{
+  constructor(){
+    super();
+    const out=this.out;
     // Turbinen-Heulen: zwei Sägezähne durch einen Bandpass
-    this.w1=osc('sawtooth',300); this.w2=osc('sawtooth',150);
-    this.wBP=filt('bandpass',900,2.5); this.wG=gain(0);
-    this.w1.connect(this.wBP); this.w2.connect(this.wBP); this.wBP.connect(this.wG).connect(this.master);
+    this.w1=this.osc('sawtooth',300); this.w2=this.osc('sawtooth',150);
+    this.wBP=this.filt('bandpass',900,2.5); this.wG=this.gain(0);
+    this.w1.connect(this.wBP); this.w2.connect(this.wBP); this.wBP.connect(this.wG).connect(out);
     // hohes Pfeifen
-    this.ws=osc('sine',900); this.wsG=gain(0); this.ws.connect(this.wsG).connect(this.master);
+    this.ws=this.osc('sine',900); this.wsG=this.gain(0); this.ws.connect(this.wsG).connect(out);
     // Schub-Fauchen: Rauschen durch Tiefpass, öffnet mit dem Gas
-    this.rLP=filt('lowpass',400,0.9); this.rG=gain(0); noise().connect(this.rLP).connect(this.rG).connect(this.master);
+    this.rLP=this.filt('lowpass',400,0.9); this.rG=this.gain(0); this.noise().connect(this.rLP).connect(this.rG).connect(out);
     // Grollen: tiefes Rauschen und Sub-Ton
-    this.ruLP=filt('lowpass',130,1.2); this.ruG=gain(0); noise().connect(this.ruLP).connect(this.ruG).connect(this.master);
-    this.sub=osc('triangle',40); this.subG=gain(0); this.sub.connect(this.subG).connect(this.master);
+    this.ruLP=this.filt('lowpass',130,1.2); this.ruG=this.gain(0); this.noise().connect(this.ruLP).connect(this.ruG).connect(out);
+    this.sub=this.osc('triangle',40); this.subG=this.gain(0); this.sub.connect(this.subG).connect(out);
     // Bremsen: Zischen
-    this.hHP=filt('highpass',2600,0.7); this.hG=gain(0); noise().connect(this.hHP).connect(this.hG).connect(this.master);
+    this.hHP=this.filt('highpass',2600,0.7); this.hG=this.gain(0); this.noise().connect(this.hHP).connect(this.hG).connect(out);
     // Boost-Stoß bei starkem Beschleunigen
-    this.bBP=filt('bandpass',800,1.4); this.bG=gain(0); noise().connect(this.bBP).connect(this.bG).connect(this.master);
+    this.bBP=this.filt('bandpass',800,1.4); this.bG=this.gain(0); this.noise().connect(this.bBP).connect(this.bG).connect(out);
 
     this.rpm=0; this.lastBoost=-9;
   }
+  reset(){this.rpm=0;}
   update(dt,kmh,thr,brk){
     // Drehzahl mit Trägheit: schnell hoch, langsam runter
     const target=clamp(0.22+0.4*Math.min(1,kmh/140)+0.38*thr-0.12*brk,0.15,1);
@@ -230,9 +279,138 @@ class Turbine{
     g.cancelScheduledValues(t); g.setValueAtTime(g.value,t); g.linearRampToValueAtTime(0.75,t+0.06); g.setTargetAtTime(0,t+0.25,0.3);
     f.cancelScheduledValues(t); f.setValueAtTime(500,t); f.exponentialRampToValueAtTime(3200,t+0.45); f.exponentialRampToValueAtTime(1200,t+1.2);
   }
-  setVolume(v,on){this.master.gain.setTargetAtTime(on?v:0,this.ctx.currentTime,on?0.15:0.4);}
 }
-let engine=null;
+
+/* ---------- Sound: Tumbler (nachempfunden: stampfender V8, rau bei Gas, Nachbrenner) ----------
+   Vorbild-Analyse: Leerlauf-Grundton ~83 Hz, gepulst mit f/8 (~10 Hz) und f/4,
+   unter Last bis ~200 Hz, Unterton bei f/3, Energie bis ~2 kHz. */
+class Tumbler extends Sound{
+  constructor(){
+    super();
+    const out=this.out;
+    // Motorkern: Sägezahn + Rechteck eine Oktave tiefer + tiefes Rauschen, alles im Zündtakt gepulst
+    this.e1=this.osc('sawtooth',83); this.e2=this.osc('square',41.5);
+    this.pulse=this.gain(0.55);
+    this.e2G=this.gain(0.1); this.e1.connect(this.pulse); this.e2.connect(this.e2G).connect(this.pulse);
+    this.noise().connect(this.filt('lowpass',160,0.8)).connect(this.gain(0.6)).connect(this.pulse);
+    // Stampfen: LFO mit Grundton und Oktave (f/8 und f/4) moduliert die Lautstärke
+    this.lope=this.osc('sine',10.4);
+    this.lope.setPeriodicWave(this.ctx.createPeriodicWave(new Float32Array([0,0,0]),new Float32Array([0,0.6,1])));
+    this.lopeG=this.gain(0.45); this.lope.connect(this.lopeG).connect(this.pulse.gain);
+    // dunkler Grundklang
+    this.eLP=this.filt('lowpass',170,0.9); this.eG=this.gain(0.3);
+    this.pulse.connect(this.eLP).connect(this.eG).connect(out);
+    // Brüllen unter Last: derselbe Motor, übersteuert und heller
+    this.roarLP=this.filt('lowpass',500,0.7); this.roarG=this.gain(0);
+    this.pulse.connect(this.gain(2)).connect(this.shaper(5)).connect(this.roarLP).connect(this.roarG).connect(out);
+    this.grBP=this.filt('bandpass',700,0.8); this.grG=this.gain(0);
+    this.noise().connect(this.grBP).connect(this.grG).connect(out);
+    // leises mechanisches Rasseln, auch im Leerlauf
+    this.noise().connect(this.filt('highpass',1500,0.7)).connect(this.gain(0.007)).connect(out);
+    // Unterton bei Volllast
+    this.sub=this.osc('triangle',28); this.subG=this.gain(0); this.sub.connect(this.subG).connect(out);
+    // Brems-Brüllen: Motor stark übersteuert, mittiges Knurren, setzt erst bei hartem Bremsen richtig ein
+    this.brBP=this.filt('bandpass',380,0.9); this.brG=this.gain(0);
+    this.pulse.connect(this.gain(3)).connect(this.shaper(8)).connect(this.brBP).connect(this.brG).connect(out);
+    // Nachbrenner beim Boost
+    this.abLP=this.filt('lowpass',200,0.9); this.abG=this.gain(0);
+    this.noise().connect(this.abLP).connect(this.abG).connect(out);
+
+    this.rpm=0; this.lastBoost=-9;
+  }
+  reset(){this.rpm=0;}
+  update(dt,kmh,thr,brk){
+    // Drehzahl folgt vor allem dem Tempo (Ton steigt beim Schnellerwerden), Gas und hartes Bremsen legen etwas drauf
+    const hb=brk*brk;
+    const target=clamp(0.08+0.6*Math.pow(Math.min(1,kmh/160),0.8)+0.3*thr+0.2*hb,0.05,1);
+    this.rpm+=(target-this.rpm)*lp(dt,target>this.rpm?0.25:0.7);
+    const r=this.rpm, t=this.ctx.currentTime, set=(p,v)=>p.setTargetAtTime(v,t,0.05);
+    const f=83+170*Math.max(0,r-0.08)/0.92;                               // 83 Hz Leerlauf … ~250 Hz
+    set(this.e1.frequency,f); set(this.e2.frequency,f/2); set(this.e2G.gain,0.1+0.25*thr); set(this.lope.frequency,f/8);
+    set(this.lopeG.gain,0.05+0.45*(1-r)*(1-thr));                          // stampft im Leerlauf, läuft unter Last rund
+    set(this.eLP.frequency,170+600*r+900*thr); set(this.eG.gain,0.22+0.3*r+0.15*thr);
+    set(this.roarLP.frequency,450+2200*thr+600*r); set(this.roarG.gain,0.03+0.2*thr*(0.4+0.6*r));
+    set(this.grBP.frequency,500+900*r); set(this.grG.gain,0.13*thr);
+    set(this.sub.frequency,f/3); set(this.subG.gain,0.17*thr+0.12*hb);
+    set(this.brBP.frequency,300+250*r); set(this.brG.gain,0.3*hb*Math.min(1,kmh/20));
+  }
+  boost(){
+    const t=this.ctx.currentTime; if(t-this.lastBoost<2.5) return; this.lastBoost=t;
+    const g=this.abG.gain, f=this.abLP.frequency;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value,t); g.linearRampToValueAtTime(0.5,t+0.1); g.setTargetAtTime(0,t+0.5,0.6);
+    f.cancelScheduledValues(t); f.setValueAtTime(150,t); f.exponentialRampToValueAtTime(1800,t+0.5); f.exponentialRampToValueAtTime(500,t+2.5);
+  }
+}
+
+/* ---------- Sound: Deutscher V8 (frei nach AMG 6.2: blubbernder Leerlauf, hell kreischend oben, 7-Gang-Automatik) ----------
+   Drehzahl kommt aus Tempo und Gang, Zündfrequenz = U/min / 15 (vier Zündungen pro Umdrehung). */
+const V8_GEARS=[0,8,13,19,25,31,38,46];                                    // km/h je 1000 U/min
+const V8_IDLE=700, V8_RED=7000;
+class GermanV8 extends Sound{
+  constructor(){
+    super();
+    const out=this.out;
+    // Motorkern: Zündfrequenz + halbe Ordnung, dazu tiefes Rauschen
+    this.e1=this.osc('sawtooth',47); this.e2=this.osc('sawtooth',23); this.e2G=this.gain(0.45);
+    this.core=this.gain(0.6);
+    this.e1.connect(this.core); this.e2.connect(this.e2G).connect(this.core);
+    this.noise().connect(this.filt('lowpass',200,0.7)).connect(this.gain(0.3)).connect(this.core);
+    // Blubbern: ungleichmäßige Zündfolge des Cross-Plane-V8, im Leerlauf deutlich, oben verschwunden
+    this.lope=this.osc('sine',12);
+    this.lope.setPeriodicWave(this.ctx.createPeriodicWave(new Float32Array([0,0,0]),new Float32Array([0,1,0.5])));
+    this.lopeG=this.gain(0.4); this.lope.connect(this.lopeG).connect(this.core.gain);
+    // Auspuff: satt und dunkel
+    this.exLP=this.filt('lowpass',300,1.2); this.exG=this.gain(0.4);
+    this.core.connect(this.exLP).connect(this.exG).connect(out);
+    // Bellen unter Last: übersteuert, Formant wandert mit der Drehzahl
+    this.drv=this.gain(1); this.barkBP=this.filt('bandpass',600,1.5); this.barkG=this.gain(0);
+    this.core.connect(this.drv).connect(this.shaper(4)).connect(this.barkBP).connect(this.barkG).connect(out);
+    // Ansaugkreischen bei hoher Drehzahl (doppelte Zündfrequenz, enger Bandpass)
+    this.inS=this.osc('sawtooth',94); this.inBP=this.filt('bandpass',1200,3); this.inG=this.gain(0);
+    this.inS.connect(this.inBP).connect(this.inG).connect(out);
+    this.reset();
+  }
+  reset(){this.gear=1; this.rpm=V8_IDLE; this.cut=0; this.blip=0;}
+  wheel(g,kmh){return kmh/V8_GEARS[g]*1000;}
+  update(dt,kmh,thr,brk){
+    // Getriebe: früh schalten bei wenig Gas, spät bei Vollgas; runter bei niedriger Drehzahl
+    const up=2300+4200*thr;
+    this.cut=Math.max(0,this.cut-dt); this.blip=Math.max(0,this.blip-dt);
+    if(this.gear<7&&this.cut===0&&brk<0.05&&this.wheel(this.gear,kmh)>up){this.gear++; this.cut=0.18;}
+    else if(this.gear>1&&this.blip===0&&this.wheel(this.gear,kmh)<1200+1300*brk){this.gear--; if(thr<0.3) this.blip=0.25;}   // beim Bremsen früher runter, mit Zwischengas
+    // Drehzahl: im 1. Gang schleift der Wandler, sonst starr ans Tempo gekoppelt
+    let target=Math.max(this.wheel(this.gear,kmh),V8_IDLE+(this.gear===1?2200*thr:0));
+    if(this.blip>0) target+=1200;
+    target=Math.min(V8_RED,target);
+    this.rpm+=(target-this.rpm)*lp(dt,target>this.rpm?0.15:0.1);
+
+    const load=this.cut>0||brk>0.05?0:thr, r=(this.rpm-V8_IDLE)/(V8_RED-V8_IDLE);
+    const ff=this.rpm/15, t=this.ctx.currentTime, set=(p,v)=>p.setTargetAtTime(v,t,0.03);
+    set(this.e1.frequency,ff); set(this.e2.frequency,ff/2); set(this.lope.frequency,ff/4);
+    set(this.lopeG.gain,0.05+0.4*(1-r)*(1-r));
+    set(this.exLP.frequency,180+ff*2.5+1500*load); set(this.exG.gain,0.3+0.15*r+0.15*load);
+    set(this.drv.gain,1+2*load);
+    set(this.barkBP.frequency,450+900*r); set(this.barkG.gain,0.04+0.22*load*(0.5+0.5*r));
+    set(this.inS.frequency,ff*2); set(this.inBP.frequency,900+2000*r); set(this.inG.gain,0.12*r*r*(0.3+0.7*load));
+  }
+  boost(){                                                                // plötzlich Vollgas → Kickdown
+    if(this.gear>1&&this.rpm*V8_GEARS[this.gear]/V8_GEARS[this.gear-1]<5500){this.gear--; this.cut=0.1;}
+  }
+}
+
+/* ---------- Sound-Auswahl: neue Sounds hier eintragen ---------- */
+const SOUNDS={
+  turbine:{name:'Turbine',desc:'Heulen, Schub-Fauchen, Boost-Stoß',make:()=>new Turbine()},
+  tumbler:{name:'Tumbler',desc:'Stampfender V8, Brems-Brüllen, Nachbrenner',make:()=>new Tumbler()},
+  v8:{name:'Deutscher V8',desc:'Blubbern, Kreischen, 7-Gang-Automatik',make:()=>new GermanV8()}
+};
+if(!SOUNDS[S.sound]) S.sound=Object.keys(SOUNDS)[0];
+let sound=null;
+function selectSound(id){
+  if(!SOUNDS[id]||id===S.sound) return;
+  S.sound=id; store.set('turbine.sound',id);
+  if(sound){sound.dispose(); sound=SOUNDS[id].make();}                    // läuft schon: direkt überblenden
+}
 
 /* ---------- Fahrtrichtung ---------- */
 function setFwd(v,conf){
@@ -308,8 +486,9 @@ async function wakeLock(){try{if(navigator.wakeLock) wl=await navigator.wakeLock
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&S.running) wakeLock();});
 
 async function start(){
-  if(!engine) engine=new Turbine();
-  const pResume=engine.ctx.resume();
+  initAudio();
+  if(!sound) sound=SOUNDS[S.sound].make();
+  const pResume=audio.ctx.resume();
   let pPerm=null;
   if(S.mode==='sensor'&&typeof DeviceMotionEvent!=='undefined'&&typeof DeviceMotionEvent.requestPermission==='function')
     pPerm=DeviceMotionEvent.requestPermission().catch(()=>'denied');
@@ -327,9 +506,9 @@ async function start(){
       ?'Kein Bewegungssensor gefunden. Am PC gibt es keinen – nutze dort die Simulation.'
       :'Keine Sensordaten: Die Seite muss über HTTPS laufen. Für den Sound-Test die Simulation nutzen.');return;}
   }
-  S.running=true; engine.rpm=0; engine.setVolume(S.vol,true); render();
+  S.running=true; sound.reset(); setVolume(true); render();
 }
-function stop(){S.running=false; if(engine) engine.setVolume(0,false); render();}
+function stop(){S.running=false; setVolume(false); render();}
 
 /* ---------- Simulation ---------- */
 function simStep(dt){
@@ -351,9 +530,9 @@ setInterval(()=>{
   S.thr=clamp((a-0.15)/S.sens,0,1);
   S.brk=clamp((-a-0.3)/(S.sens*1.6),0,1);
   S.thrHist.push(S.thr); if(S.thrHist.length>10) S.thrHist.shift();
-  if(engine&&S.running){
-    if(S.thr>0.6&&S.thr-S.thrHist[0]>0.4) engine.boost();
-    engine.update(dt,S.v*3.6,S.thr,S.brk);
+  if(sound&&S.running){
+    if(S.thr>0.6&&S.thr-S.thrHist[0]>0.4) sound.boost();
+    sound.update(dt,S.v*3.6,S.thr,S.brk);
   }
   traceAcc+=dt;
   while(traceAcc>=0.05){traceAcc-=0.05; S.trace[S.traceI]=S.running?a:0; S.traceI=(S.traceI+1)%S.trace.length;}
@@ -439,7 +618,17 @@ const keyMap={ArrowUp:'gas',ArrowDown:'brake'};
 addEventListener('keydown',e=>{if(S.mode==='sim'&&keyMap[e.key]){e.preventDefault();S.sim[keyMap[e.key]]=true;$(keyMap[e.key]+'Btn').classList.add('down');}});
 addEventListener('keyup',e=>{if(keyMap[e.key]){S.sim[keyMap[e.key]]=false;$(keyMap[e.key]+'Btn').classList.remove('down');}});
 
-$('vol').addEventListener('input',e=>{S.vol=e.target.value/100;$('volOut').textContent=e.target.value+' %';if(engine&&S.running) engine.setVolume(S.vol,true);});
+$('vol').addEventListener('input',e=>{S.vol=e.target.value/100;$('volOut').textContent=e.target.value+' %';if(S.running) setVolume(true);});
+
+// Sound-Liste aus SOUNDS aufbauen
+for(const [id,s] of Object.entries(SOUNDS)){
+  const l=document.createElement('label'); l.className='snd';
+  l.innerHTML='<input type="radio" name="sound"><b></b><small></small>';
+  const r=l.querySelector('input'); r.value=id; r.checked=id===S.sound;
+  l.querySelector('b').textContent=s.name; l.querySelector('small').textContent=s.desc;
+  $('sounds').appendChild(l);
+}
+$('sounds').addEventListener('change',e=>selectSound(e.target.value));
 $('sens').addEventListener('input',e=>{S.sens=e.target.value/10;$('sensOut').textContent=de(S.sens,1)+' m/s²';});
 
 render(); requestAnimationFrame(draw);
